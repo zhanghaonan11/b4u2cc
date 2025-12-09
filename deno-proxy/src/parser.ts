@@ -38,6 +38,8 @@ function parseInvokeXml(xml: string): ParsedInvokeCall | null {
 
 export class ToolifyParser {
   private readonly triggerSignal?: string;
+  // 是否开启思考解析，由上游请求的 thinking 配置决定
+  private readonly thinkingEnabled: boolean;
   private buffer = "";
   private captureBuffer = "";
   private capturing = false;
@@ -45,26 +47,29 @@ export class ToolifyParser {
   private thinkingBuffer = "";
   private readonly events: ParserEvent[] = [];
 
-  constructor(triggerSignal?: string) {
+  constructor(triggerSignal?: string, thinkingEnabled = false) {
     this.triggerSignal = triggerSignal;
+    this.thinkingEnabled = thinkingEnabled;
   }
 
   feedChar(char: string) {
-    // 当 triggerSignal 未配置时，按照“无工具协议，仅解析 thinking”的模式工作
+    // 当 triggerSignal 未配置时，不启用工具协议，仅在 thinkingEnabled=true 时解析 <thinking>
     if (!this.triggerSignal) {
       this.handleCharWithoutTrigger(char);
       return;
     }
 
-    // 以下为“启用工具协议”的模式，同时支持 thinking 与 <invoke> 解析
+    // 以下为“启用工具协议”的模式，根据 thinkingEnabled 决定是否解析 <thinking> 块
 
-    // 首先检查是否进入或退出思考模式
-    this.checkThinkingMode(char);
+    if (this.thinkingEnabled) {
+      // 首先检查是否进入或退出思考模式
+      this.checkThinkingMode(char);
 
-    if (this.thinkingMode) {
-      this.thinkingBuffer += char;
-      this.tryEmitThinking();
-      return;
+      if (this.thinkingMode) {
+        this.thinkingBuffer += char;
+        this.tryEmitThinking();
+        return;
+      }
     }
 
     if (this.capturing) {
@@ -110,7 +115,7 @@ export class ToolifyParser {
     if (this.buffer) {
       this.events.push({ type: "text", content: this.buffer });
     }
-    if (this.thinkingMode && this.thinkingBuffer) {
+    if (this.thinkingEnabled && this.thinkingMode && this.thinkingBuffer) {
       // 如果在思考模式下结束，发出剩余的思考内容
       // 同样需要修复开头多一个 ">" 的问题
       let thinkingContent = this.thinkingBuffer;
@@ -248,6 +253,15 @@ export class ToolifyParser {
    * - 不进行任何 <invoke> / 工具调用解析。
    */
   private handleCharWithoutTrigger(char: string) {
+    // 未开启思考解析时，简单地把所有内容当作文本处理
+    if (!this.thinkingEnabled) {
+      this.buffer += char;
+      if (this.buffer.length >= 256) {
+        this.events.push({ type: "text", content: this.buffer });
+        this.buffer = "";
+      }
+      return;
+    }
     if (this.thinkingMode) {
       // 已处于思考模式：累积思考内容并检查结束标签
       this.thinkingBuffer += char;
@@ -292,6 +306,7 @@ export class ToolifyParser {
   }
 
   private checkThinkingMode(char: string) {
+    if (!this.thinkingEnabled) return;
     // 检查是否进入思考模式
     if (!this.thinkingMode) {
       const tempBuffer = this.buffer + char;

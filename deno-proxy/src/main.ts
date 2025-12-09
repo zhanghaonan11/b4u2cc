@@ -83,19 +83,11 @@ async function handleMessages(req: Request, requestId: string) {
       output_tokens: tokenCount.output_tokens,
     });
 
-    // 根据 thinking 配置与 tools 决定是否启用工具协议
-    // 需求：在 thinking 启用时，不做工具解析，只做 thinking 解析。
-    const thinkingEnabled = !!body.thinking && body.thinking.type === "enabled";
+    // 工具解析仅由是否传入 tools 决定：存在 tools 时启用工具协议，否则禁用。
     const hasTools = (body.tools ?? []).length > 0;
-    const enableToolsProtocol = hasTools && !thinkingEnabled;
-
-    // 只有在真正启用工具协议时才生成触发信号，否则禁用工具解析
-    const triggerSignal = enableToolsProtocol ? randomTriggerSignal() : undefined;
+    const triggerSignal = hasTools ? randomTriggerSignal() : undefined;
     const openaiBase = mapClaudeToOpenAI(body, config, triggerSignal);
-
-    // 在 thinking 模式下，即使传入了 tools，也不注入工具提示，这样上游不会被要求输出 <invoke>
-    const toolsForInjection = enableToolsProtocol ? (body.tools ?? []) : [];
-    const injected = injectPrompt(openaiBase, toolsForInjection, triggerSignal);
+    const injected = injectPrompt(openaiBase, body.tools ?? [], triggerSignal);
     const upstreamReq = { ...openaiBase, messages: injected.messages };
 
     await rateLimiter.acquire();
@@ -124,7 +116,8 @@ async function handleMessages(req: Request, requestId: string) {
         const claudeStream = new ClaudeStream(writer, config, requestId, tokenCount.input_tokens || tokenCount.token_count || tokenCount.tokens);
         // 发送 message_start 事件（完全按照官方格式）
         await claudeStream.init();
-        const parser = new ToolifyParser(injected.triggerSignal);
+        const thinkingEnabled = !!body.thinking && body.thinking.type === "enabled";
+        const parser = new ToolifyParser(injected.triggerSignal, thinkingEnabled);
         const decoder = new TextDecoder();
         const reader = upstreamRes.body!.getReader();
         let sseBuffer = "";
